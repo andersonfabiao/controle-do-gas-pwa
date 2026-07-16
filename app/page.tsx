@@ -7,6 +7,7 @@ type Vendor = { id?: number; name: string; phone: string; contactType: "whatsapp
 type Tab = "dashboard" | "add" | "history" | "vendors" | "settings";
 type Theme = "auto" | "light" | "dark";
 const MODES = ["Pix", "Dinheiro", "Cartão de crédito", "Cartão de débito"];
+const BASE_PATH = "/controle-do-gas-pwa";
 
 const db = {
   open: () => new Promise<IDBDatabase>((resolve, reject) => {
@@ -79,7 +80,7 @@ export default function Home() {
   const [theme,setTheme]=useState<Theme>("auto"), [message,setMessage]=useState(""), [error,setError]=useState(false), [ready,setReady]=useState(false);
   const importRef=useRef<HTMLInputElement>(null);
   const refresh=async()=>{setEntries(await db.all<Entry>("entries"));setVendors(await db.all<Vendor>("vendors"));};
-  useEffect(()=>{(async()=>{try{await refresh();const s=await db.all<{key:string,value:Theme}>("settings");setTheme(s.find(x=>x.key==="theme")?.value||"auto");}catch{setMessage("Não foi possível abrir o armazenamento local.");setError(true);}finally{setReady(true);}})();if("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js");},[]);
+  useEffect(()=>{(async()=>{try{await refresh();const s=await db.all<{key:string,value:Theme}>("settings");setTheme(s.find(x=>x.key==="theme")?.value||"auto");}catch{setMessage("Não foi possível abrir o armazenamento local.");setError(true);}finally{setReady(true);}})();if("serviceWorker" in navigator) navigator.serviceWorker.register(`${BASE_PATH}/sw.js`,{scope:`${BASE_PATH}/`});},[]);
   useEffect(()=>{document.documentElement.dataset.theme=theme;},[theme]);
   const notify=(text:string,isError=false)=>{setMessage(text);setError(isError);window.setTimeout(()=>setMessage(""),3500)};
   const saveTheme=async(t:Theme)=>{setTheme(t);await db.put("settings",{key:"theme",value:t});};

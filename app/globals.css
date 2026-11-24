@@ -1,11 +1,23 @@
 :root {
   --bg: #0a0f0d;
   --bg-elevated: #111917;
+  --bg-grad-1: rgba(34, 197, 138, 0.15);
+  --bg-grad-2: rgba(45, 110, 90, 0.09);
   --glass-fill: rgba(255, 255, 255, 0.07);
   --glass-stroke-top: rgba(255, 255, 255, 0.15);
   --glass-stroke: rgba(255, 255, 255, 0.07);
+  --glass-shadow: rgba(0, 0, 0, 0.35);
+  --header-bg: rgba(10, 15, 13, 0.68);
+  --nav-bg: rgba(20, 28, 25, 0.72);
+  --modal-bg: rgba(24, 32, 29, 0.94);
+  --modal-backdrop: rgba(0, 0, 0, 0.6);
+  --fallback-bg: rgba(20, 26, 24, 0.96);
+  --chips-bg: rgba(255, 255, 255, 0.055);
+  --input-bg: rgba(255, 255, 255, 0.06);
+  --divider: rgba(255, 255, 255, 0.08);
   --accent: #22c58a;
   --accent-tint: rgba(34, 197, 138, 0.18);
+  --primary-text: #06150f;
   --danger: #ff453a;
   --amber: #ffd60a;
   --label: #fff;
@@ -20,9 +32,83 @@
   --green-dark: var(--accent);
   --green-soft: var(--accent-tint);
   --red: var(--danger);
+  --tank-border: rgba(255, 255, 255, 0.21);
+  --tank-shadow: inset 0 0 18px #0008, 0 8px 24px #0007;
+  --toast-bg: rgba(25, 42, 36, 0.88);
+  --toast-error-bg: rgba(123, 32, 29, 0.88);
   color-scheme: dark;
   font-family: -apple-system, "SF Pro Display", "SF Pro Text", Inter, system-ui,
     sans-serif;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #eef4f1;
+    --bg-elevated: #f7faf8;
+    --bg-grad-1: rgba(34, 197, 138, 0.18);
+    --bg-grad-2: rgba(18, 153, 105, 0.1);
+    --glass-fill: rgba(255, 255, 255, 0.74);
+    --glass-stroke-top: rgba(255, 255, 255, 0.96);
+    --glass-stroke: rgba(16, 36, 28, 0.1);
+    --glass-shadow: rgba(16, 36, 28, 0.09);
+    --header-bg: rgba(238, 244, 241, 0.76);
+    --nav-bg: rgba(255, 255, 255, 0.8);
+    --modal-bg: rgba(248, 251, 249, 0.96);
+    --modal-backdrop: rgba(10, 20, 16, 0.36);
+    --fallback-bg: rgba(255, 255, 255, 0.96);
+    --chips-bg: rgba(16, 36, 28, 0.06);
+    --input-bg: rgba(16, 36, 28, 0.05);
+    --divider: rgba(16, 36, 28, 0.09);
+    --accent: #129969;
+    --accent-tint: rgba(18, 153, 105, 0.16);
+    --primary-text: #fff;
+    --danger: #d92d20;
+    --amber: #b77900;
+    --label: #10201a;
+    --label-2: rgba(16, 32, 26, 0.64);
+    --label-3: rgba(16, 32, 26, 0.25);
+    --surface2: rgba(16, 36, 28, 0.08);
+    --tank-border: rgba(16, 32, 26, 0.24);
+    --tank-shadow:
+      inset 0 0 14px rgba(16, 32, 26, 0.08), 0 8px 20px rgba(16, 32, 26, 0.1);
+    --toast-bg: rgba(16, 32, 26, 0.9);
+    --toast-error-bg: rgba(185, 38, 28, 0.94);
+    color-scheme: light;
+  }
+}
+
+:root[data-theme="light"] {
+  --bg: #eef4f1;
+  --bg-elevated: #f7faf8;
+  --bg-grad-1: rgba(34, 197, 138, 0.18);
+  --bg-grad-2: rgba(18, 153, 105, 0.1);
+  --glass-fill: rgba(255, 255, 255, 0.74);
+  --glass-stroke-top: rgba(255, 255, 255, 0.96);
+  --glass-stroke: rgba(16, 36, 28, 0.1);
+  --glass-shadow: rgba(16, 36, 28, 0.09);
+  --header-bg: rgba(238, 244, 241, 0.76);
+  --nav-bg: rgba(255, 255, 255, 0.8);
+  --modal-bg: rgba(248, 251, 249, 0.96);
+  --modal-backdrop: rgba(10, 20, 16, 0.36);
+  --fallback-bg: rgba(255, 255, 255, 0.96);
+  --chips-bg: rgba(16, 36, 28, 0.06);
+  --input-bg: rgba(16, 36, 28, 0.05);
+  --divider: rgba(16, 36, 28, 0.09);
+  --accent: #129969;
+  --accent-tint: rgba(18, 153, 105, 0.16);
+  --primary-text: #fff;
+  --danger: #d92d20;
+  --amber: #b77900;
+  --label: #10201a;
+  --label-2: rgba(16, 32, 26, 0.64);
+  --label-3: rgba(16, 32, 26, 0.25);
+  --surface2: rgba(16, 36, 28, 0.08);
+  --tank-border: rgba(16, 32, 26, 0.24);
+  --tank-shadow:
+    inset 0 0 14px rgba(16, 32, 26, 0.08), 0 8px 20px rgba(16, 32, 26, 0.1);
+  --toast-bg: rgba(16, 32, 26, 0.9);
+  --toast-error-bg: rgba(185, 38, 28, 0.94);
+  color-scheme: light;
 }
 
 * {
@@ -39,14 +125,10 @@ body {
   min-height: 100%;
   background: radial-gradient(
       circle at 15% -10%,
-      rgba(34, 197, 138, 0.15),
+      var(--bg-grad-1),
       transparent 34%
     ),
-    radial-gradient(
-      circle at 90% 15%,
-      rgba(45, 110, 90, 0.09),
-      transparent 30%
-    ),
+    radial-gradient(circle at 90% 15%, var(--bg-grad-2), transparent 30%),
     var(--bg);
   color: var(--label);
 }
@@ -81,7 +163,7 @@ header {
   position: sticky;
   top: 0;
   z-index: 10;
-  background: rgba(10, 15, 13, 0.68);
+  background: var(--header-bg);
   border-bottom: 1px solid var(--glass-stroke);
   backdrop-filter: blur(30px) saturate(180%);
   -webkit-backdrop-filter: blur(30px) saturate(180%);
@@ -119,7 +201,7 @@ header {
   border-radius: 11px;
   box-shadow:
     inset 0 1px 1px #ffffff70,
-    0 6px 18px #0008;
+    0 6px 18px var(--glass-shadow);
 }
 
 .local-pill {
@@ -163,7 +245,7 @@ header {
 
 .chips {
   display: flex;
-  background: rgba(255, 255, 255, 0.055);
+  background: var(--chips-bg);
   border: 1px solid var(--glass-stroke);
   border-radius: 14px;
   padding: 2px;
@@ -193,8 +275,8 @@ header {
   color: var(--label);
   font-weight: 650;
   box-shadow:
-    inset 0 1px 0 #ffffff20,
-    0 3px 10px #0004;
+    inset 0 1px 0 var(--glass-stroke-top),
+    0 3px 10px var(--glass-shadow);
 }
 
 .gas-card,
@@ -208,7 +290,7 @@ header {
   border: 1px solid var(--glass-stroke);
   box-shadow:
     inset 0 1px 0 var(--glass-stroke-top),
-    0 10px 30px rgba(0, 0, 0, 0.35);
+    0 10px 30px var(--glass-shadow);
   backdrop-filter: blur(30px) saturate(180%);
   -webkit-backdrop-filter: blur(30px) saturate(180%);
   border-radius: 22px;
@@ -253,15 +335,13 @@ header {
   position: relative;
   height: 96px;
   width: 62px;
-  border: 2px solid #ffffff35;
+  border: 2px solid var(--tank-border);
   border-radius: 12px 12px 18px 18px;
   padding: 5px;
   display: flex;
   align-items: end;
   overflow: hidden;
-  box-shadow:
-    inset 0 0 18px #0008,
-    0 8px 24px #0007;
+  box-shadow: var(--tank-shadow);
 }
 
 .tank:before {
@@ -271,7 +351,7 @@ header {
   left: 17px;
   width: 24px;
   height: 8px;
-  border: 2px solid #ffffff35;
+  border: 2px solid var(--tank-border);
   border-bottom: 0;
   border-radius: 5px 5px 0 0;
 }
@@ -405,7 +485,7 @@ header {
   display: grid;
   grid-template-columns: 120px 1fr;
   align-items: center;
-  border-bottom: 0.5px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 0.5px solid var(--divider);
 }
 
 .form input,
@@ -424,7 +504,7 @@ select {
 
 .form fieldset {
   padding: 12px 16px;
-  border-bottom: 0.5px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 0.5px solid var(--divider);
 }
 
 fieldset {
@@ -445,14 +525,14 @@ legend {
 .primary {
   border: 0;
   background: var(--accent);
-  color: #06150f;
+  color: var(--primary-text);
   font-weight: 750;
   padding: 14px 18px;
   border-radius: 16px;
   cursor: pointer;
   box-shadow:
     inset 0 1px 0 #ffffff55,
-    0 8px 22px #0007;
+    0 8px 22px var(--glass-shadow);
   min-height: 52px;
 }
 
@@ -529,7 +609,7 @@ legend {
 }
 
 .vendor-form input {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--input-bg);
   text-align: left;
   min-height: 44px;
 }
@@ -537,7 +617,7 @@ legend {
 .modal {
   position: fixed;
   inset: 0;
-  background: #0009;
+  background: var(--modal-backdrop);
   z-index: 30;
   display: flex;
   align-items: flex-end;
@@ -549,7 +629,7 @@ legend {
   width: min(100%, 560px);
   max-height: 92dvh;
   overflow: auto;
-  background: rgba(24, 32, 29, 0.94);
+  background: var(--modal-bg);
   padding: 12px 20px calc(20px + env(safe-area-inset-bottom));
   border: 1px solid var(--glass-stroke);
   border-radius: 28px 28px 0 0;
@@ -557,7 +637,7 @@ legend {
   gap: 16px;
   box-shadow:
     inset 0 1px 0 var(--glass-stroke-top),
-    0 -16px 50px #0008;
+    0 -16px 50px var(--glass-shadow);
   backdrop-filter: blur(34px) saturate(180%);
 }
 
@@ -581,7 +661,7 @@ legend {
 
 .modal input {
   text-align: left;
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--input-bg);
 }
 
 .actions {
@@ -600,7 +680,7 @@ legend {
 
 .actions .primary {
   background: var(--accent);
-  color: #06150f;
+  color: var(--primary-text);
 }
 
 .actions .danger {
@@ -699,21 +779,21 @@ legend {
   bottom: calc(102px + env(safe-area-inset-bottom));
   transform: translateX(-50%);
   z-index: 40;
-  background: rgba(25, 42, 36, 0.88);
+  background: var(--toast-bg);
   border: 1px solid var(--glass-stroke);
   color: #fff;
   padding: 12px 18px;
   border-radius: 16px;
   box-shadow:
     inset 0 1px 0 var(--glass-stroke-top),
-    0 10px 30px #0008;
+    0 10px 30px var(--glass-shadow);
   backdrop-filter: blur(30px);
   animation: toast-in 0.25s both;
 }
 
 .message.error {
   color: #fff;
-  background: #7b201dcc;
+  background: var(--toast-error-bg);
 }
 
 .empty {
@@ -757,14 +837,14 @@ nav {
   padding: 5px;
   display: flex;
   justify-content: center;
-  background: rgba(20, 28, 25, 0.72);
+  background: var(--nav-bg);
   backdrop-filter: blur(30px) saturate(180%);
   -webkit-backdrop-filter: blur(30px) saturate(180%);
   border: 1px solid var(--glass-stroke);
   border-radius: 28px;
   box-shadow:
     inset 0 1px 0 var(--glass-stroke-top),
-    0 12px 34px #0009;
+    0 12px 34px var(--glass-shadow);
 }
 
 nav button {
@@ -792,7 +872,7 @@ nav button.selected {
   color: var(--label);
   font-weight: 650;
   background: var(--accent-tint);
-  box-shadow: inset 0 1px 0 #ffffff18;
+  box-shadow: inset 0 1px 0 var(--glass-stroke-top);
 }
 
 button:active,
@@ -825,7 +905,7 @@ a:active {
   .vendor,
   .setting-button,
   .message {
-    background: rgba(20, 26, 24, 0.96);
+    background: var(--fallback-bg);
   }
 }
 

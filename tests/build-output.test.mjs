@@ -28,3 +28,18 @@ test("includes required PWA and GitHub Pages assets", async () => {
     requiredFiles.map((file) => access(new URL(file, outRoot))),
   );
 });
+
+test("supports light, dark and automatic theme styles", async () => {
+  const css = await readFile(
+    new URL("../app/globals.css", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(css, /:root\[data-theme="light"\]/);
+  assert.match(
+    css,
+    /@media \(prefers-color-scheme: light\)\s*\{\s*:root:not\(\[data-theme="dark"\]\)/,
+  );
+  assert.match(css, /color-scheme:\s*light/);
+  assert.match(css, /color-scheme:\s*dark/);
+});

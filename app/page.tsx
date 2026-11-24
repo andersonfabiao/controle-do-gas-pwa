@@ -213,10 +213,12 @@ function Chips({
   values,
   value,
   onChange,
+  labels,
 }: {
   values: string[];
   value: string;
   onChange: (v: string) => void;
+  labels?: Record<string, string>;
 }) {
   return (
     <div className="chips">
@@ -227,7 +229,7 @@ function Chips({
           className={value === v ? "chip active" : "chip"}
           onClick={() => onChange(v)}
         >
-          {v}
+          {labels?.[v] ?? v}
         </button>
       ))}
     </div>
@@ -272,6 +274,17 @@ export default function Home() {
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
+    const media = window.matchMedia("(prefers-color-scheme: light)");
+    const syncThemeColor = () => {
+      const isLight = theme === "light" || (theme === "auto" && media.matches);
+      const meta = document.querySelector('meta[name="theme-color"]');
+      if (meta) {
+        meta.setAttribute("content", isLight ? "#eef4f1" : "#0a0f0d");
+      }
+    };
+    syncThemeColor();
+    media.addEventListener("change", syncThemeColor);
+    return () => media.removeEventListener("change", syncThemeColor);
   }, [theme]);
 
   const notify = (text: string, isError = false) => {
@@ -323,6 +336,13 @@ export default function Home() {
       if (!confirmed) return;
 
       await db.replace(data.entries, data.vendors, data.settings);
+      if (
+        data.settings?.theme === "auto" ||
+        data.settings?.theme === "light" ||
+        data.settings?.theme === "dark"
+      ) {
+        setTheme(data.settings.theme);
+      }
       await refresh();
       notify("Backup restaurado com sucesso.");
     } catch {
@@ -1052,6 +1072,7 @@ function Settings({
           values={["auto", "light", "dark"]}
           value={theme}
           onChange={(v) => setTheme(v as Theme)}
+          labels={{ auto: "Automático", light: "Claro", dark: "Escuro" }}
         />
       </article>
 

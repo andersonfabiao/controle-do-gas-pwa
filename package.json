@@ -9,7 +9,7 @@
     "dev": "next dev",
     "build": "next build",
     "lint": "eslint .",
-    "test": "npm run build && node --test tests/build-output.test.mjs"
+    "test": "npm run build && node --test tests/build-output.test.mjs tests/gas-metrics.test.mjs"
   },
   "dependencies": {
     "next": "16.2.6",

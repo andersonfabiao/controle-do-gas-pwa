@@ -43,3 +43,42 @@ test("supports light, dark and automatic theme styles", async () => {
   assert.match(css, /color-scheme:\s*light/);
   assert.match(css, /color-scheme:\s*dark/);
 });
+
+test("implements Phase 1 dashboard labels, chart details, and bottom nav clearance", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /SEU BOTIJÃO ATUAL/);
+  assert.match(page, /Última reposição/);
+  assert.match(page, /Próxima reposição estimada/);
+  assert.match(page, /Intervalo médio/);
+  assert.doesNotMatch(page, /label="Frequência"/);
+  assert.match(page, /chart-avg-line/);
+  assert.match(css, /padding-bottom:\s*calc\(128px \+ env\(safe-area-inset-bottom\)\)/);
+});
+
+test("implements Phase 3 navigation labels, supplier comparison, and savings card", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+
+  assert.match(page, /full:\s*"Início"/);
+  assert.match(page, /full:\s*"Registrar compra"/);
+  assert.match(page, /full:\s*"Fornecedores"/);
+  assert.match(page, /full:\s*"Ajustes"/);
+  assert.match(page, /nav-primary/);
+  assert.match(page, /ECONOMIA NA ÚLTIMA COMPRA/);
+  assert.match(page, /MENOR PREÇO NOS SEUS REGISTROS/);
+  assert.match(page, /Observações/);
+});
+
+test("implements Phase 4 consumption stats, reminders, and report exports", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+
+  assert.match(page, /Estatísticas de consumo/);
+  assert.match(page, /Gasto mensal estimado/);
+  assert.match(page, /LEMBRETES DE REPOSIÇÃO/);
+  assert.match(page, /Adicionar ao calendário \(\.ics\)/);
+  assert.match(page, /Exportar relatório PDF/);
+  assert.match(page, /Exportar planilha Excel \(\.csv\)/);
+});

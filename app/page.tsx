@@ -1,21 +1,29 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  buildPrintableReportHtml,
+  buildReminderIcs,
+  buildReportCsv,
+  computeConsumptionStats,
+  computeFinancialMetrics,
+  computeGasForecast,
+  computeSavingsComparison,
+  computeVendorComparison,
+  evaluateReminder,
+  filterEntriesByPeriod,
+  getTodayIso,
+  isValidIsoDate,
+  normalizeVendorName,
+  parseCivilDate,
+  type GasEntry,
+  type GasVendor,
+  type PeriodOption,
+  type ReminderSettings,
+} from "@/lib/gas-metrics";
 
-type Entry = {
-  id?: number;
-  date: string;
-  price: number;
-  mode: string;
-  vendor: string;
-};
-
-type Vendor = {
-  id?: number;
-  name: string;
-  phone: string;
-  contactType: "whatsapp" | "phone" | "app";
-};
+type Entry = GasEntry;
+type Vendor = GasVendor;
 
 type Tab = "dashboard" | "add" | "history" | "vendors" | "settings";
 type Theme = "auto" | "light" | "dark";
@@ -85,7 +93,7 @@ const db = {
   replace: async (
     entries: Entry[],
     vendors: Vendor[],
-    settings?: { theme?: Theme },
+    settings?: { theme?: Theme; reminder?: ReminderSettings },
   ) => {
     const database = await db.open();
     return new Promise<void>((resolve, reject) => {
@@ -104,6 +112,9 @@ const db = {
       if (settings?.theme) {
         ss.put({ key: "theme", value: settings.theme });
       }
+      if (settings?.reminder) {
+        ss.put({ key: "reminder", value: settings.reminder });
+      }
 
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
@@ -119,28 +130,15 @@ const brl = (n: number) =>
 
 const brDate = (iso: string) => (iso ? iso.split("-").reverse().join("/") : "");
 
-const today = () => new Date().toLocaleDateString("en-CA");
-
-const civil = (s: string) => {
-  const [y, m, d] = s.split("-").map(Number);
-  return new Date(y, m - 1, d);
+const shortBrDate = (iso: string) => {
+  if (!iso) return "";
+  const [y, m, d] = iso.split("-");
+  return `${d}/${m}/${y.slice(2)}`;
 };
 
-const daysBetween = (a: string, b: string) =>
-  Math.round((civil(b).getTime() - civil(a).getTime()) / 86400000);
+const today = () => getTodayIso();
 
-const weightedDays = (items: Entry[]) => {
-  const sorted = [...items].sort((a, b) => a.date.localeCompare(b.date));
-  if (sorted.length < 2) return 0;
-
-  let sum = 0;
-  let weights = 0;
-  for (let i = 1; i < sorted.length; i++) {
-    sum += daysBetween(sorted[i - 1].date, sorted[i].date) * i;
-    weights += i;
-  }
-  return Math.round(sum / weights);
-};
+const civil = (s: string) => parseCivilDate(s);
 
 const download = (name: string, text: string, type: string) => {
   const a = document.createElement("a");
@@ -149,6 +147,29 @@ const download = (name: string, text: string, type: string) => {
   a.click();
   URL.revokeObjectURL(a.href);
 };
+
+const printHtmlReport = (html: string) => {
+  const iframe = document.createElement("iframe");
+  iframe.style.position = "fixed";
+  iframe.style.right = "0";
+  iframe.style.bottom = "0";
+  iframe.style.width = "0";
+  iframe.style.height = "0";
+  iframe.style.border = "0";
+  iframe.srcdoc = html;
+  iframe.onload = () => {
+    try {
+      iframe.contentWindow?.focus();
+      iframe.contentWindow?.print();
+    } finally {
+      window.setTimeout(() => iframe.remove(), 1500);
+    }
+  };
+  document.body.appendChild(iframe);
+};
+
+const DEFAULT_REMINDER: ReminderSettings = { enabled: true, leadDays: 7 };
+const REMINDER_LEAD_OPTIONS = ["3", "5", "7", "10", "15"];
 
 const iosConfirm = (message: string, destructive = false) =>
   new Promise<boolean>((resolve) => {
@@ -241,6 +262,7 @@ export default function Home() {
   const [entries, setEntries] = useState<Entry[]>([]);
   const [vendors, setVendors] = useState<Vendor[]>([]);
   const [theme, setTheme] = useState<Theme>("auto");
+  const [reminder, setReminder] = useState<ReminderSettings>(DEFAULT_REMINDER);
   const [message, setMessage] = useState("");
   const [error, setError] = useState(false);
   const [ready, setReady] = useState(false);
@@ -255,8 +277,27 @@ export default function Home() {
     (async () => {
       try {
         await refresh();
-        const s = await db.all<{ key: string; value: Theme }>("settings");
-        setTheme(s.find((x) => x.key === "theme")?.value || "auto");
+        const s = await db.all<{ key: string; value: unknown }>("settings");
+        const savedTheme = s.find((x) => x.key === "theme")?.value;
+        if (
+          savedTheme === "auto" ||
+          savedTheme === "light" ||
+          savedTheme === "dark"
+        ) {
+          setTheme(savedTheme);
+        }
+        const savedReminder = s.find((x) => x.key === "reminder")
+          ?.value as Partial<ReminderSettings> | undefined;
+        if (savedReminder && typeof savedReminder.enabled === "boolean") {
+          setReminder({
+            enabled: savedReminder.enabled,
+            leadDays:
+              typeof savedReminder.leadDays === "number" &&
+              savedReminder.leadDays >= 1
+                ? savedReminder.leadDays
+                : DEFAULT_REMINDER.leadDays,
+          });
+        }
       } catch {
         setMessage("Não foi possível abrir o armazenamento local.");
         setError(true);
@@ -271,6 +312,29 @@ export default function Home() {
       });
     }
   }, []);
+
+  useEffect(() => {
+    if (!ready || !reminder.enabled) return;
+    if (typeof window === "undefined" || !("Notification" in window)) return;
+    if (Notification.permission !== "granted") return;
+
+    const forecast = computeGasForecast(entries, today());
+    const evaluated = evaluateReminder(forecast, reminder);
+    if (!evaluated.active || !forecast.nextEstimatedDate) return;
+
+    const dedupKey = `gas_notif_${today()}_${forecast.nextEstimatedDate}`;
+    if (sessionStorage.getItem(dedupKey)) return;
+    sessionStorage.setItem(dedupKey, "1");
+
+    try {
+      new Notification(evaluated.title, {
+        body: evaluated.detail,
+        icon: `${BASE_PATH}/icons/icon-192.png`,
+      });
+    } catch {
+      // Alguns ambientes PWA bloqueiam new Notification() fora de SW; o aviso no app continua ativo.
+    }
+  }, [ready, entries, reminder]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -291,12 +355,51 @@ export default function Home() {
     setMessage(text);
     setError(isError);
     if (!isError) navigator.vibrate?.(10);
-    window.setTimeout(() => setMessage(""), 1600);
+    window.setTimeout(() => setMessage(""), 1800);
   };
 
   const saveTheme = async (t: Theme) => {
     setTheme(t);
     await db.put("settings", { key: "theme", value: t });
+  };
+
+  const saveReminder = async (next: ReminderSettings) => {
+    setReminder(next);
+    await db.put("settings", { key: "reminder", value: next });
+  };
+
+  const exportReportCsv = (period: PeriodOption) => {
+    const csv = buildReportCsv(entries, vendors, period, today());
+    const slug = period.toLowerCase().replace(/\s+/g, "-");
+    download(
+      `relatorio_controle_gas_${slug}_${today()}.csv`,
+      csv,
+      "text/csv;charset=utf-8",
+    );
+    notify("Planilha Excel (.csv) exportada.");
+  };
+
+  const exportReportPdf = (period: PeriodOption) => {
+    const html = buildPrintableReportHtml(entries, vendors, period, today());
+    printHtmlReport(html);
+    notify("Abrindo relatório para salvar em PDF.");
+  };
+
+  const downloadCalendarReminder = () => {
+    const forecast = computeGasForecast(entries, today());
+    const ics = buildReminderIcs(forecast, reminder.leadDays);
+    if (!ics) {
+      return notify(
+        "Registre compras em pelo menos 2 datas para gerar um lembrete.",
+        true,
+      );
+    }
+    download(
+      `lembrete_gas_${forecast.nextEstimatedDate}.ics`,
+      ics,
+      "text/calendar;charset=utf-8",
+    );
+    notify("Lembrete (.ics) pronto para adicionar ao calendário.");
   };
 
   const exportJson = () =>
@@ -309,7 +412,7 @@ export default function Home() {
           exportedAt: new Date().toISOString(),
           entries,
           vendors,
-          settings: { theme },
+          settings: { theme, reminder },
         },
         null,
         2,
@@ -330,7 +433,7 @@ export default function Home() {
       }
 
       const confirmed = await iosConfirm(
-        `Restaurar ${data.entries.length} compras e ${data.vendors.length} vendedores? Os dados atuais serão substituídos.`,
+        `Restaurar ${data.entries.length} compras e ${data.vendors.length} fornecedores? Os dados atuais serão substituídos.`,
         true,
       );
       if (!confirmed) return;
@@ -342,6 +445,18 @@ export default function Home() {
         data.settings?.theme === "dark"
       ) {
         setTheme(data.settings.theme);
+      }
+      if (
+        data.settings?.reminder &&
+        typeof data.settings.reminder.enabled === "boolean"
+      ) {
+        setReminder({
+          enabled: data.settings.reminder.enabled,
+          leadDays:
+            typeof data.settings.reminder.leadDays === "number"
+              ? data.settings.reminder.leadDays
+              : DEFAULT_REMINDER.leadDays,
+        });
       }
       await refresh();
       notify("Backup restaurado com sucesso.");
@@ -355,12 +470,12 @@ export default function Home() {
   }
 
   const props = { entries, vendors, refresh, notify };
-  const navLabels: Record<Tab, string> = {
-    dashboard: "Dashboard",
-    add: "Adicionar",
-    history: "Histórico",
-    vendors: "Vendedores",
-    settings: "Configurações",
+  const navLabels: Record<Tab, { full: string; short: string }> = {
+    dashboard: { full: "Início", short: "Início" },
+    add: { full: "Registrar compra", short: "Registrar" },
+    history: { full: "Histórico", short: "Histórico" },
+    vendors: { full: "Fornecedores", short: "Fornecedores" },
+    settings: { full: "Ajustes", short: "Ajustes" },
   };
 
   return (
@@ -378,9 +493,22 @@ export default function Home() {
 
       <main className="content">
         <Message text={message} error={error} />
-        {tab === "dashboard" && <Dashboard entries={entries} />}
+        {tab === "dashboard" && (
+          <Dashboard
+            entries={entries}
+            reminder={reminder}
+            onNavigate={setTab}
+            onDownloadCalendar={downloadCalendarReminder}
+          />
+        )}
         {tab === "add" && <Add {...props} />}
-        {tab === "history" && <History {...props} />}
+        {tab === "history" && (
+          <History
+            {...props}
+            onExportCsv={exportReportCsv}
+            onExportPdf={exportReportPdf}
+          />
+        )}
         {tab === "vendors" && <Vendors {...props} />}
         {tab === "settings" && (
           <Settings
@@ -388,6 +516,11 @@ export default function Home() {
             vendors={vendors}
             theme={theme}
             setTheme={saveTheme}
+            reminder={reminder}
+            setReminder={saveReminder}
+            onDownloadCalendar={downloadCalendarReminder}
+            onExportCsv={exportReportCsv}
+            onExportPdf={exportReportPdf}
             exportJson={exportJson}
             importRef={importRef}
             notify={notify}
@@ -396,17 +529,26 @@ export default function Home() {
         )}
       </main>
 
-      <nav>
+      <nav aria-label="Navegação principal">
         {(["dashboard", "add", "history", "vendors", "settings"] as Tab[]).map(
           (t) => (
             <button
               key={t}
               type="button"
-              className={tab === t ? "selected" : ""}
+              aria-label={navLabels[t].full}
+              className={[
+                tab === t ? "selected" : "",
+                t === "add" ? "nav-primary" : "",
+              ]
+                .filter(Boolean)
+                .join(" ")}
               onClick={() => setTab(t)}
             >
               <Icon name={t} />
-              <span>{navLabels[t]}</span>
+              <span className="nav-label-full">{navLabels[t].full}</span>
+              <span className="nav-label-short" aria-hidden>
+                {navLabels[t].short}
+              </span>
             </button>
           ),
         )}
@@ -427,22 +569,49 @@ export default function Home() {
   );
 }
 
-function Dashboard({ entries }: { entries: Entry[] }) {
-  const [period, setPeriod] = useState("Tudo");
+function Dashboard({
+  entries,
+  reminder,
+  onNavigate,
+  onDownloadCalendar,
+}: {
+  entries: Entry[];
+  reminder: ReminderSettings;
+  onNavigate: (tab: Tab) => void;
+  onDownloadCalendar: () => void;
+}) {
+  const [period, setPeriod] = useState<PeriodOption>("Tudo");
 
-  const filtered = useMemo(() => {
-    const limit = period === "6 meses" ? 6 : period === "1 ano" ? 12 : 0;
-    if (!limit) {
-      return [...entries].sort((a, b) => a.date.localeCompare(b.date));
-    }
-    const d = new Date();
-    d.setMonth(d.getMonth() - limit);
-    return entries
-      .filter((e) => civil(e.date) > d)
-      .sort((a, b) => a.date.localeCompare(b.date));
-  }, [entries, period]);
+  const referenceDate = today();
 
-  if (!entries.length) {
+  const forecast = useMemo(
+    () => computeGasForecast(entries, referenceDate),
+    [entries, referenceDate],
+  );
+
+  const filtered = useMemo(
+    () => filterEntriesByPeriod(entries, period, referenceDate),
+    [entries, period, referenceDate],
+  );
+
+  const metrics = useMemo(
+    () => computeFinancialMetrics(filtered),
+    [filtered],
+  );
+
+  const stats = useMemo(
+    () => computeConsumptionStats(entries, period, referenceDate),
+    [entries, period, referenceDate],
+  );
+
+  const reminderEval = useMemo(
+    () => evaluateReminder(forecast, reminder),
+    [forecast, reminder],
+  );
+
+  const savings = useMemo(() => computeSavingsComparison(entries), [entries]);
+
+  if (!forecast.hasData || !forecast.lastPurchase) {
     return (
       <Empty
         icon="◆"
@@ -452,85 +621,331 @@ function Dashboard({ entries }: { entries: Entry[] }) {
     );
   }
 
-  const avg = weightedDays(filtered);
-  const last = filtered.at(-1);
-  const elapsed = last ? daysBetween(last.date, today()) : 0;
-  const level = avg
-    ? Math.max(0, Math.min(100, 100 - (elapsed / avg) * 100))
-    : 100;
-  const left = avg ? Math.max(0, Math.round(avg - elapsed)) : 0;
-  const total = filtered.reduce((s, e) => s + e.price, 0);
-  const variation =
-    filtered.length > 1
-      ? ((filtered.at(-1)!.price - filtered[0].price) / filtered[0].price) * 100
-      : 0;
+  const levelColor =
+    forecast.tone === "green"
+      ? "var(--green)"
+      : forecast.tone === "amber"
+        ? "var(--amber)"
+        : forecast.tone === "red"
+          ? "var(--red)"
+          : "var(--muted)";
+
+  const confidenceBadge =
+    forecast.interval.confidence === "reliable"
+      ? `Média de ${forecast.interval.intervalCount} intervalos`
+      : forecast.interval.confidence === "initial"
+        ? "Estimativa inicial · 1 intervalo"
+        : "Histórico insuficiente";
+
+  const statusText =
+    forecast.interval.averageDays === null
+      ? "Registre compras em pelo menos 2 datas diferentes para gerar uma previsão."
+      : forecast.overdueDays > 0
+        ? `Prazo médio estimado superado há ${forecast.overdueDays} ${forecast.overdueDays === 1 ? "dia" : "dias"}`
+        : forecast.remainingDays === 0
+          ? "Previsão estimada de reposição para hoje"
+          : `Aproximadamente ${forecast.remainingDays} ${forecast.remainingDays === 1 ? "dia restante" : "dias restantes"}`;
+
+  const elapsedLabel =
+    forecast.elapsedDays === 0
+      ? "hoje"
+      : forecast.elapsedDays === 1
+        ? "há 1 dia"
+        : `há ${forecast.elapsedDays} dias`;
+
+  const periodSubtitle =
+    period === "6 meses"
+      ? "Últimos 6 meses"
+      : period === "1 ano"
+        ? "Último ano"
+        : "Todo o histórico";
+
+  const variation = metrics.priceVariation;
+  const variationValue = variation
+    ? `${variation.percent > 0 ? "+" : ""}${variation.percent.toFixed(1).replace(".", ",")}%`
+    : "—";
+  const variationTone = !variation
+    ? undefined
+    : variation.direction === "up"
+      ? "red"
+      : variation.direction === "down"
+        ? "green"
+        : undefined;
+  const variationSub = !variation
+    ? metrics.count === 0
+      ? "sem compras no período"
+      : "mín. 2 compras no período"
+    : variation.direction === "flat"
+      ? `estável desde ${shortBrDate(variation.baseDate)}`
+      : `vs. ${brl(variation.basePrice)} em ${shortBrDate(variation.baseDate)}`;
+
+  const intervalSub =
+    metrics.interval.averageDays === null
+      ? metrics.count === 0
+        ? "sem compras no período"
+        : "mín. 2 datas diferentes"
+      : metrics.interval.intervalCount === 1
+        ? "baseado em 1 intervalo"
+        : `ponderado em ${metrics.interval.intervalCount} intervalos`;
 
   return (
-    <section>
+    <section className="dashboard">
       <div className="title-row">
         <div>
-          <h1>Dashboard</h1>
+          <h1>Início</h1>
           <p>Visão geral do seu botijão</p>
         </div>
         <Chips
-          values={["Tudo", "6 meses", "1 ano"]}
+          values={["6 meses", "1 ano", "Tudo"]}
           value={period}
-          onChange={setPeriod}
+          onChange={(v) => setPeriod(v as PeriodOption)}
         />
       </div>
 
-      <article className="gas-card">
-        <div className="gas-head">
+      {reminderEval.active && (
+        <article
+          className={`reminder-banner reminder-${reminderEval.level}`}
+          role="status"
+          aria-label="Lembrete de reposição"
+        >
           <div>
-            <span className="eyebrow">◆ NÍVEL ESTIMADO</span>
-            <strong
-              style={{
-                color:
-                  level > 50
-                    ? "var(--green)"
-                    : level > 25
-                      ? "var(--amber)"
-                      : "var(--red)",
-              }}
+            <strong>{reminderEval.title}</strong>
+            <p>{reminderEval.detail}</p>
+          </div>
+          <div className="reminder-actions">
+            <button
+              type="button"
+              className="reminder-cta"
+              onClick={() => onNavigate("add")}
             >
-              {Math.round(level)}%
+              Registrar compra
+            </button>
+            <button
+              type="button"
+              onClick={() => onNavigate("vendors")}
+            >
+              Fornecedores
+            </button>
+            <button type="button" onClick={onDownloadCalendar}>
+              Calendário (.ics)
+            </button>
+          </div>
+        </article>
+      )}
+
+      <article className="gas-card" aria-label="Situação estimada do botijão atual">
+        <div className="gas-head">
+          <div className="gas-status">
+            <div className="gas-eyebrow-row">
+              <span className="eyebrow">◆ SEU BOTIJÃO ATUAL</span>
+              <span className={`confidence-pill confidence-${forecast.interval.confidence}`}>
+                {confidenceBadge}
+              </span>
+            </div>
+            <span className="gas-sublabel">Nível estimado</span>
+            <strong style={{ color: levelColor }}>
+              {forecast.estimatedLevel !== null
+                ? `${forecast.estimatedLevel}%`
+                : "—"}
             </strong>
-            <p>
-              {avg
-                ? `Aproximadamente ${left} dias restantes`
-                : "Registre mais uma compra para calcular"}
-            </p>
+            <p>{statusText}</p>
           </div>
-          <div className="tank">
-            <i style={{ height: `${level}%` }} />
+          <div className="tank" aria-hidden>
+            <i
+              className={`tone-${forecast.tone}`}
+              style={{
+                height: `${forecast.estimatedLevel !== null ? Math.max(6, forecast.estimatedLevel) : 0}%`,
+              }}
+            />
           </div>
         </div>
-        <div className="progress">
-          <i style={{ width: `${level}%` }} />
+
+        <div className="progress" aria-hidden>
+          <i
+            className={`tone-${forecast.tone}`}
+            style={{ width: `${forecast.estimatedLevel ?? 0}%` }}
+          />
         </div>
-        <small>Estimativa baseada no intervalo ponderado entre compras</small>
+
+        <div className="gas-meta">
+          <div>
+            <span>Última reposição</span>
+            <b>
+              {brDate(forecast.lastPurchase.date)}{" "}
+              <small>({elapsedLabel})</small>
+            </b>
+          </div>
+          <div>
+            <span>Próxima reposição estimada</span>
+            <b>
+              {forecast.nextEstimatedDate
+                ? brDate(forecast.nextEstimatedDate)
+                : "Aguardando histórico"}
+            </b>
+          </div>
+        </div>
+
+        <small>
+          Previsão calculada com base no histórico de reposições (não representa medição física do gás).
+        </small>
       </article>
 
-      <div className="metrics">
-        <Metric label="Último preço" value={last ? brl(last.price) : "—"} />
+      <div className="metrics" aria-label="Indicadores financeiros">
+        <Metric
+          label="Última compra"
+          value={metrics.lastPurchase ? brl(metrics.lastPurchase.price) : "—"}
+          sub={
+            metrics.lastPurchase
+              ? `em ${brDate(metrics.lastPurchase.date)}`
+              : "sem compras no período"
+          }
+        />
         <Metric
           label="Total gasto"
-          value={brl(total)}
-          sub={`${filtered.length} compras`}
+          value={metrics.count > 0 ? brl(metrics.totalSpent) : "—"}
+          sub={
+            metrics.count > 0
+              ? `${metrics.count} ${metrics.count === 1 ? "compra registrada" : "compras registradas"}`
+              : "sem compras no período"
+          }
         />
         <Metric
-          label="Variação"
-          value={`${variation.toFixed(1).replace(".", ",")}%`}
-          tone={variation > 0 ? "red" : "green"}
+          label="Preço médio"
+          value={metrics.averagePrice !== null ? brl(metrics.averagePrice) : "—"}
+          sub={
+            metrics.averagePrice !== null
+              ? `média em ${metrics.count} ${metrics.count === 1 ? "compra" : "compras"}`
+              : "sem compras no período"
+          }
         />
         <Metric
-          label="Frequência"
-          value={avg ? `${avg} dias` : "—"}
-          sub={avg ? "média ponderada" : "dados insuficientes"}
+          label="Intervalo médio"
+          value={
+            metrics.interval.averageDays !== null
+              ? `${metrics.interval.averageDays} dias`
+              : "—"
+          }
+          sub={intervalSub}
+        />
+        <Metric
+          label="Variação de preço"
+          value={variationValue}
+          tone={variationTone}
+          sub={variationSub}
         />
       </div>
 
-      {filtered.length > 1 && <PriceChart entries={filtered} />}
+      {savings && (
+        <article
+          className={`savings-card savings-${savings.status}`}
+          aria-label="Comparativo da última compra"
+        >
+          <div className="savings-head">
+            <div>
+              <span className="eyebrow">
+                {savings.status === "saved"
+                  ? "◆ ECONOMIA NA ÚLTIMA COMPRA"
+                  : "◆ COMPARATIVO DA ÚLTIMA COMPRA"}
+              </span>
+              <strong>
+                {savings.status === "saved"
+                  ? `Redução de ${brl(savings.difference)} (${savings.percent.toFixed(1).replace(".", ",")}%)`
+                  : savings.status === "increased"
+                    ? `Aumento de ${brl(Math.abs(savings.difference))} (+${savings.percent.toFixed(1).replace(".", ",")}%)`
+                    : "Mesmo preço da compra anterior (0,0%)"}
+              </strong>
+            </div>
+            <span className={`savings-badge savings-badge-${savings.status}`}>
+              {savings.status === "saved"
+                ? `-${savings.percent.toFixed(1).replace(".", ",")}%`
+                : savings.status === "increased"
+                  ? `+${savings.percent.toFixed(1).replace(".", ",")}%`
+                  : "0,0%"}
+            </span>
+          </div>
+
+          <div className="savings-compare">
+            <div>
+              <span>Compra anterior ({brDate(savings.previous.date)})</span>
+              <b>{brl(savings.previous.price)}</b>
+              <small>{savings.previous.vendor}</small>
+            </div>
+            <div>
+              <span>Compra atual ({brDate(savings.current.date)})</span>
+              <b>{brl(savings.current.price)}</b>
+              <small>{savings.current.vendor}</small>
+            </div>
+          </div>
+
+          <small>
+            Comparação direta entre a sua compra mais recente e a compra imediatamente anterior.
+          </small>
+        </article>
+      )}
+
+      <PriceChart entries={filtered} periodLabel={periodSubtitle} />
+
+      <article className="stats-card" aria-label="Estatísticas de consumo">
+        <div className="stats-head">
+          <div>
+            <h2>Estatísticas de consumo</h2>
+            <span className="chart-period">{periodSubtitle}</span>
+          </div>
+        </div>
+
+        <div className="stats-grid">
+          <div className="stat-box">
+            <span>Gasto mensal estimado</span>
+            <strong>
+              {stats.estimatedMonthlySpend !== null
+                ? brl(stats.estimatedMonthlySpend)
+                : "—"}
+            </strong>
+            <small>
+              {stats.estimatedMonthlySpend !== null
+                ? "projeção para 30 dias"
+                : "mín. 2 datas no período"}
+            </small>
+          </div>
+
+          <div className="stat-box">
+            <span>Gasto realizado ({period})</span>
+            <strong>
+              {stats.purchaseCount > 0 ? brl(stats.totalSpentRealized) : "—"}
+            </strong>
+            <small>valor efetivamente pago</small>
+          </div>
+
+          <div className="stat-box">
+            <span>Duração média estimada</span>
+            <strong>
+              {stats.interval.averageDays !== null
+                ? `${stats.interval.averageDays} dias`
+                : "—"}
+            </strong>
+            <small>
+              {stats.minIntervalDays !== null && stats.maxIntervalDays !== null
+                ? stats.minIntervalDays === stats.maxIntervalDays
+                  ? `ciclo único de ${stats.minIntervalDays} dias`
+                  : `entre ${stats.minIntervalDays} e ${stats.maxIntervalDays} dias`
+                : "mín. 2 datas no período"}
+            </small>
+          </div>
+
+          <div className="stat-box">
+            <span>Compras por período</span>
+            <strong>
+              {stats.countsByPeriod.sixMonths} / {stats.countsByPeriod.oneYear} /{" "}
+              {stats.countsByPeriod.all}
+            </strong>
+            <small>6 meses · 1 ano · total</small>
+          </div>
+        </div>
+
+        <small className="stats-note">
+          Premissa do gasto mensal estimado: (preço médio ÷ intervalo médio em dias) × 30 dias. Projeções não representam gasto efetivamente pago.
+        </small>
+      </article>
     </section>
   );
 }
@@ -555,33 +970,205 @@ function Metric({
   );
 }
 
-function PriceChart({ entries }: { entries: Entry[] }) {
-  const min = Math.min(...entries.map((e) => e.price));
-  const max = Math.max(...entries.map((e) => e.price));
+function PriceChart({
+  entries,
+  periodLabel,
+}: {
+  entries: Entry[];
+  periodLabel: string;
+}) {
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+
+  if (entries.length < 2) {
+    return (
+      <article className="chart-card chart-empty">
+        <div className="chart-header">
+          <div>
+            <h2>Evolução de preços</h2>
+            <span className="chart-period">{periodLabel}</span>
+          </div>
+        </div>
+        <p className="chart-empty-note">
+          {entries.length === 0
+            ? "Nenhuma compra registrada neste período."
+            : "Registre pelo menos 2 compras neste período para visualizar a evolução de preços."}
+        </p>
+      </article>
+    );
+  }
+
+  const prices = entries.map((e) => e.price);
+  const min = Math.min(...prices);
+  const max = Math.max(...prices);
+  const avgPrice = prices.reduce((s, p) => s + p, 0) / prices.length;
   const range = max - min || 1;
-  const points = entries
-    .map(
-      (e, i) =>
-        `${(i / (entries.length - 1)) * 100},${90 - ((e.price - min) / range) * 70}`,
-    )
-    .join(" ");
+
+  const width = 600;
+  const height = 210;
+  const padX = 24;
+  const padTop = 22;
+  const padBottom = 34;
+  const plotW = width - padX * 2;
+  const plotH = height - padTop - padBottom;
+
+  const getY = (price: number) =>
+    max === min
+      ? padTop + plotH / 2
+      : padTop + (1 - (price - min) / range) * plotH;
+
+  const coords = entries.map((entry, i) => ({
+    entry,
+    key: `${entry.id ?? i}-${entry.date}-${entry.price}`,
+    x: padX + (i / (entries.length - 1)) * plotW,
+    y: getY(entry.price),
+  }));
+
+  const avgY = getY(avgPrice);
+  const linePoints = coords.map((c) => `${c.x.toFixed(1)},${c.y.toFixed(1)}`).join(" ");
+  const areaPoints = `${padX},${padTop + plotH} ${linePoints} ${padX + plotW},${padTop + plotH}`;
+
+  const matchedIndex = selectedKey
+    ? coords.findIndex((c) => c.key === selectedKey)
+    : -1;
+  const activeIndex = matchedIndex >= 0 ? matchedIndex : coords.length - 1;
+  const active = coords[activeIndex];
+  const midIndex = coords.length > 2 ? Math.floor((coords.length - 1) / 2) : -1;
 
   return (
-    <article className="chart-card">
-      <div>
-        <h2>Evolução de preço</h2>
-        <span>
-          {brl(min)} — {brl(max)}
-        </span>
+    <article className="chart-card" aria-label="Evolução de preços">
+      <div className="chart-header">
+        <div>
+          <h2>Evolução de preços</h2>
+          <span className="chart-period">{periodLabel}</span>
+        </div>
+        <div className="chart-selected" aria-live="polite">
+          <strong>{brl(active.entry.price)}</strong>
+          <span>
+            {brDate(active.entry.date)} · {active.entry.vendor}
+          </span>
+        </div>
       </div>
-      <svg
-        viewBox="0 0 100 100"
-        preserveAspectRatio="none"
-        role="img"
-        aria-label="Gráfico de evolução de preço"
-      >
-        <polyline points={points} />
-      </svg>
+
+      <div className="chart-stats">
+        <div>
+          <span>Menor</span>
+          <b>{brl(min)}</b>
+        </div>
+        <div>
+          <span>Média</span>
+          <b>{brl(avgPrice)}</b>
+        </div>
+        <div>
+          <span>Maior</span>
+          <b>{brl(max)}</b>
+        </div>
+      </div>
+
+      <div className="chart-canvas">
+        <svg
+          viewBox={`0 0 ${width} ${height}`}
+          role="img"
+          aria-label={`Gráfico de evolução de preços com ${entries.length} compras`}
+        >
+          <defs>
+            <linearGradient id="priceAreaGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.28" />
+              <stop offset="100%" stopColor="var(--accent)" stopOpacity="0" />
+            </linearGradient>
+          </defs>
+
+          <line
+            className="chart-avg-line"
+            x1={padX}
+            y1={avgY}
+            x2={width - padX}
+            y2={avgY}
+          />
+          <text
+            className="chart-avg-label"
+            x={width - padX}
+            y={Math.max(14, avgY - 6)}
+            textAnchor="end"
+          >
+            Média {brl(avgPrice)}
+          </text>
+
+          <polygon points={areaPoints} fill="url(#priceAreaGrad)" />
+          <polyline className="chart-line" points={linePoints} />
+
+          {coords.map((point, i) => {
+            const isActive = i === activeIndex;
+            return (
+              <g key={point.key} className="chart-point-group">
+                {isActive && (
+                  <circle
+                    className="chart-point-halo"
+                    cx={point.x}
+                    cy={point.y}
+                    r={11}
+                  />
+                )}
+                <circle
+                  className={isActive ? "chart-point active" : "chart-point"}
+                  cx={point.x}
+                  cy={point.y}
+                  r={isActive ? 5.5 : 4}
+                />
+                <circle
+                  className="chart-hit"
+                  cx={point.x}
+                  cy={point.y}
+                  r={20}
+                  tabIndex={0}
+                  role="button"
+                  aria-label={`${brDate(point.entry.date)}: ${brl(point.entry.price)} (${point.entry.vendor})`}
+                  aria-pressed={isActive}
+                  onClick={() => setSelectedKey(point.key)}
+                  onMouseEnter={() => setSelectedKey(point.key)}
+                  onFocus={() => setSelectedKey(point.key)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      setSelectedKey(point.key);
+                    }
+                  }}
+                />
+              </g>
+            );
+          })}
+
+          <text
+            className="chart-axis-label"
+            x={padX}
+            y={height - 8}
+            textAnchor="start"
+          >
+            {shortBrDate(coords[0].entry.date)}
+          </text>
+          {midIndex > 0 && (
+            <text
+              className="chart-axis-label"
+              x={coords[midIndex].x}
+              y={height - 8}
+              textAnchor="middle"
+            >
+              {shortBrDate(coords[midIndex].entry.date)}
+            </text>
+          )}
+          <text
+            className="chart-axis-label"
+            x={width - padX}
+            y={height - 8}
+            textAnchor="end"
+          >
+            {shortBrDate(coords[coords.length - 1].entry.date)}
+          </text>
+        </svg>
+      </div>
+
+      <small className="chart-hint">
+        Toque ou passe sobre um ponto para ver data, valor e fornecedor.
+      </small>
     </article>
   );
 }
@@ -600,21 +1187,38 @@ function Add({
   const [price, setPrice] = useState("");
   const [mode, setMode] = useState("");
   const [vendor, setVendor] = useState("");
+  const [notes, setNotes] = useState("");
 
   const save = async () => {
     const p = Number(price.replace(",", "."));
-    if (!date || date > today() || !p || p <= 0 || !mode || !vendor.trim()) {
-      return notify("Preencha todos os campos com valores válidos.", true);
+    const vendorName = vendor.trim();
+    if (
+      !isValidIsoDate(date) ||
+      date > today() ||
+      !Number.isFinite(p) ||
+      p <= 0 ||
+      !vendorName
+    ) {
+      return notify("Informe valor pago, data válida e fornecedor.", true);
     }
 
-    await db.put("entries", { date, price: p, mode, vendor: vendor.trim() });
+    const cleanNotes = notes.trim();
+    const record: Entry = {
+      date,
+      price: p,
+      mode,
+      vendor: vendorName,
+      ...(cleanNotes ? { notes: cleanNotes } : {}),
+    };
+
+    await db.put("entries", record);
     if (
       !vendors.some(
-        (v) => v.name.toLowerCase() === vendor.trim().toLowerCase(),
+        (v) => normalizeVendorName(v.name) === normalizeVendorName(vendorName),
       )
     ) {
       await db.put("vendors", {
-        name: vendor.trim(),
+        name: vendorName,
         phone: "",
         contactType: "whatsapp",
       });
@@ -624,17 +1228,28 @@ function Add({
     setPrice("");
     setMode("");
     setVendor("");
+    setNotes("");
     notify("Compra registrada com sucesso.");
   };
 
   return (
     <section className="form-page">
-      <h1>Nova compra</h1>
-      <p>Registre a troca do seu botijão</p>
+      <h1>Registrar compra</h1>
+      <p>Registre a troca do seu botijão de forma rápida</p>
 
       <article className="panel form">
         <label>
-          Data
+          Valor pago (R$)
+          <input
+            inputMode="decimal"
+            placeholder="0,00"
+            value={price}
+            onChange={(e) => setPrice(e.target.value.replace(/[^0-9,.]/g, ""))}
+          />
+        </label>
+
+        <label>
+          Data da compra
           <input
             type="date"
             max={today()}
@@ -644,22 +1259,7 @@ function Add({
         </label>
 
         <label>
-          Preço (R$)
-          <input
-            inputMode="decimal"
-            placeholder="0,00"
-            value={price}
-            onChange={(e) => setPrice(e.target.value.replace(/[^0-9,.]/g, ""))}
-          />
-        </label>
-
-        <fieldset>
-          <legend>Pagamento</legend>
-          <Chips values={MODES} value={mode} onChange={setMode} />
-        </fieldset>
-
-        <label>
-          Vendedor
+          Fornecedor
           <input
             list="vendors-list"
             placeholder="Digite ou selecione"
@@ -673,6 +1273,52 @@ function Add({
           </datalist>
         </label>
 
+        {vendors.length > 0 && (
+          <div className="quick-vendors" aria-label="Fornecedores salvos">
+            <span>Fornecedores salvos:</span>
+            <div className="quick-vendor-chips">
+              {vendors.map((v) => (
+                <button
+                  key={v.id}
+                  type="button"
+                  className={
+                    normalizeVendorName(vendor) === normalizeVendorName(v.name)
+                      ? "quick-chip active"
+                      : "quick-chip"
+                  }
+                  onClick={() => setVendor(v.name)}
+                >
+                  {v.name}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <fieldset>
+          <legend>
+            Forma de pagamento <span className="optional-tag">(opcional)</span>
+          </legend>
+          <Chips
+            values={MODES}
+            value={mode}
+            onChange={(v) => setMode(mode === v ? "" : v)}
+          />
+        </fieldset>
+
+        <label className="form-textarea-row">
+          <span>
+            Observações <small className="optional-tag">(opcional)</small>
+          </span>
+          <textarea
+            rows={2}
+            maxLength={240}
+            placeholder="Ex.: Entrega rápida, promoção, lacre conferido..."
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+          />
+        </label>
+
         <button type="button" className="primary" onClick={save}>
           Salvar compra
         </button>
@@ -683,15 +1329,20 @@ function Add({
 
 function History({
   entries,
+  vendors,
   refresh,
   notify,
+  onExportCsv,
+  onExportPdf,
 }: {
   entries: Entry[];
   vendors: Vendor[];
   refresh: () => Promise<void>;
   notify: (s: string, e?: boolean) => void;
+  onExportCsv: (period: PeriodOption) => void;
+  onExportPdf: (period: PeriodOption) => void;
 }) {
-  const [period, setPeriod] = useState("Tudo");
+  const [period, setPeriod] = useState<PeriodOption>("Tudo");
   const [sort, setSort] = useState("Data ↓");
   const [edit, setEdit] = useState<Entry | null>(null);
 
@@ -700,7 +1351,7 @@ function History({
     if (period !== "Tudo") {
       const d = new Date();
       d.setMonth(d.getMonth() - (period === "6 meses" ? 6 : 12));
-      a = a.filter((e) => civil(e.date) > d);
+      a = a.filter((e) => isValidIsoDate(e.date) && civil(e.date) >= d);
     }
     return a.sort((x, y) =>
       sort === "Data ↓"
@@ -726,13 +1377,16 @@ function History({
       <div className="title-row">
         <div>
           <h1>Histórico</h1>
-          <p>{list.length} compras encontradas</p>
+          <p>
+            {list.length}{" "}
+            {list.length === 1 ? "compra encontrada" : "compras encontradas"}
+          </p>
         </div>
         <div className="filters">
           <Chips
-            values={["Tudo", "6 meses", "1 ano"]}
+            values={["6 meses", "1 ano", "Tudo"]}
             value={period}
-            onChange={setPeriod}
+            onChange={(v) => setPeriod(v as PeriodOption)}
           />
           <select value={sort} onChange={(e) => setSort(e.target.value)}>
             {["Data ↓", "Data ↑", "Preço ↓", "Preço ↑"].map((x) => (
@@ -741,6 +1395,20 @@ function History({
           </select>
         </div>
       </div>
+
+      {list.length > 0 && (
+        <div className="report-bar" aria-label="Exportar relatório do período">
+          <span>Exportar ({period}):</span>
+          <div className="report-bar-actions">
+            <button type="button" onClick={() => onExportPdf(period)}>
+              Relatório PDF
+            </button>
+            <button type="button" onClick={() => onExportCsv(period)}>
+              Planilha Excel (.csv)
+            </button>
+          </div>
+        </div>
+      )}
 
       {!list.length ? (
         <Empty icon="≡" title="Nenhuma compra encontrada." />
@@ -751,7 +1419,8 @@ function History({
               <div>
                 <small>{brDate(e.date)}</small>
                 <strong>{e.vendor}</strong>
-                <span>{e.mode}</span>
+                {e.mode && <span>{e.mode}</span>}
+                {e.notes && <span className="entry-notes">{e.notes}</span>}
               </div>
               <b>{brl(e.price)}</b>
               <button
@@ -776,6 +1445,8 @@ function History({
       {edit && (
         <EditEntry
           entry={edit}
+          vendors={vendors}
+          notify={notify}
           close={() => setEdit(null)}
           done={async () => {
             await refresh();
@@ -790,24 +1461,37 @@ function History({
 
 function EditEntry({
   entry,
+  vendors,
+  notify,
   close,
   done,
 }: {
   entry: Entry;
+  vendors: Vendor[];
+  notify: (s: string, e?: boolean) => void;
   close: () => void;
   done: () => void;
 }) {
   const [date, setDate] = useState(entry.date);
   const [price, setPrice] = useState(String(entry.price).replace(".", ","));
-  const [mode, setMode] = useState(entry.mode);
+  const [mode, setMode] = useState(entry.mode || "");
   const [vendor, setVendor] = useState(entry.vendor);
+  const [notes, setNotes] = useState(entry.notes || "");
 
   return (
     <div className="modal">
       <article>
         <h2>Editar compra</h2>
         <label>
-          Data
+          Valor pago (R$)
+          <input
+            inputMode="decimal"
+            value={price}
+            onChange={(e) => setPrice(e.target.value.replace(/[^0-9,.]/g, ""))}
+          />
+        </label>
+        <label>
+          Data da compra
           <input
             type="date"
             max={today()}
@@ -816,13 +1500,38 @@ function EditEntry({
           />
         </label>
         <label>
-          Preço
-          <input value={price} onChange={(e) => setPrice(e.target.value)} />
+          Fornecedor
+          <input
+            list="edit-vendors-list"
+            value={vendor}
+            onChange={(e) => setVendor(e.target.value)}
+          />
+          <datalist id="edit-vendors-list">
+            {vendors.map((v) => (
+              <option key={v.id} value={v.name} />
+            ))}
+          </datalist>
         </label>
-        <Chips values={MODES} value={mode} onChange={setMode} />
+        <fieldset>
+          <legend>
+            Forma de pagamento <span className="optional-tag">(opcional)</span>
+          </legend>
+          <Chips
+            values={MODES}
+            value={mode}
+            onChange={(v) => setMode(mode === v ? "" : v)}
+          />
+        </fieldset>
         <label>
-          Vendedor
-          <input value={vendor} onChange={(e) => setVendor(e.target.value)} />
+          <span>
+            Observações <small className="optional-tag">(opcional)</small>
+          </span>
+          <textarea
+            rows={2}
+            maxLength={240}
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+          />
         </label>
         <div className="actions">
           <button type="button" onClick={close}>
@@ -833,16 +1542,46 @@ function EditEntry({
             className="primary"
             onClick={async () => {
               const p = Number(price.replace(",", "."));
-              if (!date || date > today() || !p || !mode || !vendor.trim()) {
-                return;
+              const vendorName = vendor.trim();
+              if (
+                !isValidIsoDate(date) ||
+                date > today() ||
+                !Number.isFinite(p) ||
+                p <= 0 ||
+                !vendorName
+              ) {
+                return notify(
+                  "Informe valor pago, data válida e fornecedor.",
+                  true,
+                );
               }
-              await db.put("entries", {
+              const cleanNotes = notes.trim();
+              const updated: Entry = {
                 ...entry,
                 date,
                 price: p,
                 mode,
-                vendor: vendor.trim(),
-              });
+                vendor: vendorName,
+              };
+              if (cleanNotes) {
+                updated.notes = cleanNotes;
+              } else {
+                delete updated.notes;
+              }
+              await db.put("entries", updated);
+              if (
+                !vendors.some(
+                  (v) =>
+                    normalizeVendorName(v.name) ===
+                    normalizeVendorName(vendorName),
+                )
+              ) {
+                await db.put("vendors", {
+                  name: vendorName,
+                  phone: "",
+                  contactType: "whatsapp",
+                });
+              }
               done();
             }}
           >
@@ -855,6 +1594,7 @@ function EditEntry({
 }
 
 function Vendors({
+  entries,
   vendors,
   refresh,
   notify,
@@ -864,46 +1604,91 @@ function Vendors({
   refresh: () => Promise<void>;
   notify: (s: string, e?: boolean) => void;
 }) {
+  const [period, setPeriod] = useState<PeriodOption>("Tudo");
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [type, setType] = useState<Vendor["contactType"]>("whatsapp");
   const [edit, setEdit] = useState<Vendor | null>(null);
+  const [expandedKey, setExpandedKey] = useState<string | null>(null);
+
+  const referenceDate = today();
+  const comparison = useMemo(
+    () => computeVendorComparison(entries, vendors, period, referenceDate),
+    [entries, vendors, period, referenceDate],
+  );
+
+  const periodSubtitle =
+    period === "6 meses"
+      ? "últimos 6 meses"
+      : period === "1 ano"
+        ? "último ano"
+        : "todo o histórico";
 
   const save = async () => {
-    if (!name.trim()) {
-      return notify("Informe o nome do vendedor.", true);
+    const cleanName = name.trim();
+    if (!cleanName) {
+      return notify("Informe o nome do fornecedor.", true);
     }
     if (
-      vendors.some((v) => v.name.toLowerCase() === name.trim().toLowerCase())
+      vendors.some(
+        (v) => normalizeVendorName(v.name) === normalizeVendorName(cleanName),
+      )
     ) {
-      return notify("Este vendedor já está cadastrado.", true);
+      return notify("Este fornecedor já está cadastrado.", true);
     }
 
     await db.put("vendors", {
-      name: name.trim(),
-      phone,
+      name: cleanName,
+      phone: phone.trim(),
       contactType: type,
     });
     setName("");
     setPhone("");
     await refresh();
-    notify("Vendedor adicionado.");
+    notify("Fornecedor adicionado.");
   };
 
   return (
     <section>
-      <h1>Vendedores</h1>
-      <p>Cadastre seus contatos de gás</p>
+      <div className="title-row">
+        <div>
+          <h1>Fornecedores</h1>
+          <p>Cadastre contatos e compare seus preços registrados</p>
+        </div>
+        <Chips
+          values={["6 meses", "1 ano", "Tudo"]}
+          value={period}
+          onChange={(v) => setPeriod(v as PeriodOption)}
+        />
+      </div>
+
+      {comparison.lowestPrice !== null && (
+        <article
+          className="best-vendor-card"
+          aria-label="Menor preço registrado no período"
+        >
+          <div>
+            <span className="eyebrow">◆ MENOR PREÇO NOS SEUS REGISTROS</span>
+            <strong>{brl(comparison.lowestPrice)}</strong>
+            <p>
+              {comparison.lowestVendorNames.join(", ")} · {periodSubtitle}
+            </p>
+          </div>
+          <small>
+            Comparação baseada exclusivamente nas compras registradas por você neste período.
+          </small>
+        </article>
+      )}
 
       <article className="panel vendor-form">
         <input
-          placeholder="Nome"
+          placeholder="Nome do fornecedor"
           value={name}
           onChange={(e) => setName(e.target.value)}
         />
         <input
           type="tel"
-          placeholder="Telefone"
+          placeholder="Telefone (opcional)"
           value={phone}
           onChange={(e) => setPhone(e.target.value)}
         />
@@ -911,46 +1696,145 @@ function Vendors({
           values={["whatsapp", "phone", "app"]}
           value={type}
           onChange={(v) => setType(v as Vendor["contactType"])}
+          labels={{ whatsapp: "WhatsApp", phone: "Telefone", app: "App" }}
         />
         <button type="button" className="primary" onClick={save}>
           Adicionar
         </button>
       </article>
 
-      <div className="list">
-        {vendors.map((v) => (
-          <article className="vendor" key={v.id}>
-            <div>
-              <strong>{v.name}</strong>
-              <span>{v.phone || "Sem telefone"}</span>
-            </div>
-            {v.phone && v.contactType !== "app" && (
-              <a
-                href={
-                  v.contactType === "whatsapp"
-                    ? `https://wa.me/55${v.phone.replace(/\D/g, "")}`
-                    : `tel:${v.phone.replace(/\D/g, "")}`
-                }
-                aria-label="Entrar em contato"
-              >
-                {v.contactType === "whatsapp" ? "Mensagem" : "Ligar"}
-              </a>
-            )}
-            <button type="button" onClick={() => setEdit(v)}>
-              ✎
-            </button>
-          </article>
-        ))}
-      </div>
+      {!comparison.items.length ? (
+        <Empty
+          icon="▣"
+          title="Nenhum fornecedor cadastrado."
+          text="Adicione um fornecedor acima ou registre uma compra para começar a comparar preços."
+        />
+      ) : (
+        <div className="list">
+          {comparison.items.map((item) => {
+            const v = item.vendor;
+            const isExpanded = expandedKey === item.normalizedName;
+            const contactHref =
+              v?.phone && v.contactType !== "app"
+                ? v.contactType === "whatsapp"
+                  ? `https://wa.me/55${v.phone.replace(/\D/g, "")}`
+                  : `tel:${v.phone.replace(/\D/g, "")}`
+                : null;
+
+            return (
+              <article className="vendor-card" key={item.normalizedName}>
+                <div className="vendor-top">
+                  <div className="vendor-info">
+                    <div className="vendor-name-row">
+                      <strong>{item.name}</strong>
+                      {item.isLowestRegistered && (
+                        <span className="vendor-best-pill">
+                          Menor preço registrado
+                        </span>
+                      )}
+                    </div>
+                    <span>
+                      {v?.phone || "Sem telefone cadastrado"}
+                      {item.purchaseCount > 0
+                        ? ` · ${item.purchaseCount} ${item.purchaseCount === 1 ? "compra" : "compras"}`
+                        : " · Sem compras no período"}
+                    </span>
+                  </div>
+
+                  <div className="vendor-actions">
+                    {contactHref && v && (
+                      <a href={contactHref} aria-label={`Contatar ${item.name}`}>
+                        {v.contactType === "whatsapp" ? "WhatsApp" : "Ligar"}
+                      </a>
+                    )}
+                    <button
+                      type="button"
+                      aria-label={`Editar ${item.name}`}
+                      onClick={() =>
+                        setEdit(
+                          v ?? {
+                            name: item.name,
+                            phone: "",
+                            contactType: "whatsapp",
+                          },
+                        )
+                      }
+                    >
+                      ✎
+                    </button>
+                  </div>
+                </div>
+
+                {item.purchaseCount > 0 &&
+                  item.minPrice !== null &&
+                  item.averagePrice !== null &&
+                  item.lastPrice !== null && (
+                    <>
+                      <div className="vendor-prices">
+                        <div>
+                          <span>Menor</span>
+                          <b>{brl(item.minPrice)}</b>
+                        </div>
+                        <div>
+                          <span>Médio</span>
+                          <b>{brl(item.averagePrice)}</b>
+                        </div>
+                        <div>
+                          <span>Último</span>
+                          <b>{brl(item.lastPrice)}</b>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        className="vendor-history-toggle"
+                        aria-expanded={isExpanded}
+                        onClick={() =>
+                          setExpandedKey(
+                            isExpanded ? null : item.normalizedName,
+                          )
+                        }
+                      >
+                        {isExpanded
+                          ? "Ocultar histórico de preços"
+                          : `Ver histórico de preços (${item.purchaseCount})`}
+                      </button>
+
+                      {isExpanded && (
+                        <div className="vendor-history">
+                          {item.history.map((h, idx) => (
+                            <div
+                              className="vendor-history-row"
+                              key={h.id ?? `${h.date}-${idx}`}
+                            >
+                              <div>
+                                <span>{brDate(h.date)}</span>
+                                {h.mode && <small>{h.mode}</small>}
+                                {h.notes && <small>{h.notes}</small>}
+                              </div>
+                              <b>{brl(h.price)}</b>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  )}
+              </article>
+            );
+          })}
+        </div>
+      )}
 
       {edit && (
         <EditVendor
           vendor={edit}
+          entries={entries}
+          notify={notify}
           close={() => setEdit(null)}
-          done={async () => {
+          done={async (msg) => {
             await refresh();
             setEdit(null);
-            notify("Vendedor atualizado.");
+            notify(msg);
           }}
         />
       )}
@@ -960,12 +1844,16 @@ function Vendors({
 
 function EditVendor({
   vendor,
+  entries,
+  notify,
   close,
   done,
 }: {
   vendor: Vendor;
+  entries: Entry[];
+  notify: (s: string, e?: boolean) => void;
   close: () => void;
-  done: () => void;
+  done: (message: string) => void;
 }) {
   const [name, setName] = useState(vendor.name);
   const [phone, setPhone] = useState(vendor.phone);
@@ -974,33 +1862,40 @@ function EditVendor({
   return (
     <div className="modal">
       <article>
-        <h2>Editar vendedor</h2>
+        <h2>{vendor.id ? "Editar fornecedor" : "Salvar contato do fornecedor"}</h2>
         <label>
           Nome
           <input value={name} onChange={(e) => setName(e.target.value)} />
         </label>
         <label>
-          Telefone
-          <input value={phone} onChange={(e) => setPhone(e.target.value)} />
+          Telefone (opcional)
+          <input
+            type="tel"
+            value={phone}
+            onChange={(e) => setPhone(e.target.value)}
+          />
         </label>
         <Chips
           values={["whatsapp", "phone", "app"]}
           value={type}
           onChange={(v) => setType(v as Vendor["contactType"])}
+          labels={{ whatsapp: "WhatsApp", phone: "Telefone", app: "App" }}
         />
         <div className="actions">
-          <button
-            type="button"
-            className="danger"
-            onClick={async () => {
-              if (await iosConfirm("Excluir este vendedor?", true)) {
-                await db.delete("vendors", vendor.id!);
-                done();
-              }
-            }}
-          >
-            Excluir
-          </button>
+          {vendor.id && (
+            <button
+              type="button"
+              className="danger"
+              onClick={async () => {
+                if (await iosConfirm("Excluir este fornecedor?", true)) {
+                  await db.delete("vendors", vendor.id!);
+                  done("Fornecedor excluído.");
+                }
+              }}
+            >
+              Excluir
+            </button>
+          )}
           <button type="button" onClick={close}>
             Cancelar
           </button>
@@ -1008,14 +1903,29 @@ function EditVendor({
             type="button"
             className="primary"
             onClick={async () => {
-              if (!name.trim()) return;
-              await db.put("vendors", {
-                ...vendor,
-                name: name.trim(),
-                phone,
+              const cleanName = name.trim();
+              if (!cleanName) {
+                return notify("Informe o nome do fornecedor.", true);
+              }
+              const oldKey = normalizeVendorName(vendor.name);
+              const payload: Vendor = {
+                ...(vendor.id ? { id: vendor.id } : {}),
+                name: cleanName,
+                phone: phone.trim(),
                 contactType: type,
-              });
-              done();
+              };
+              await db.put("vendors", payload);
+
+              // Se renomear o fornecedor, atualiza o vínculo nas compras registradas.
+              if (oldKey !== normalizeVendorName(cleanName)) {
+                const matching = entries.filter(
+                  (e) => normalizeVendorName(e.vendor) === oldKey,
+                );
+                for (const item of matching) {
+                  await db.put("entries", { ...item, vendor: cleanName });
+                }
+              }
+              done("Fornecedor atualizado.");
             }}
           >
             Salvar
@@ -1031,6 +1941,11 @@ function Settings({
   vendors,
   theme,
   setTheme,
+  reminder,
+  setReminder,
+  onDownloadCalendar,
+  onExportCsv,
+  onExportPdf,
   exportJson,
   importRef,
   notify,
@@ -1040,14 +1955,48 @@ function Settings({
   vendors: Vendor[];
   theme: Theme;
   setTheme: (t: Theme) => void;
+  reminder: ReminderSettings;
+  setReminder: (r: ReminderSettings) => Promise<void>;
+  onDownloadCalendar: () => void;
+  onExportCsv: (period: PeriodOption) => void;
+  onExportPdf: (period: PeriodOption) => void;
   exportJson: () => void;
   importRef: React.RefObject<HTMLInputElement | null>;
   notify: (s: string, e?: boolean) => void;
   refresh: () => Promise<void>;
 }) {
+  const [reportPeriod, setReportPeriod] = useState<PeriodOption>("Tudo");
+  const [notifPerm, setNotifPerm] = useState<string>(() =>
+    typeof window !== "undefined" && "Notification" in window
+      ? Notification.permission
+      : "unsupported",
+  );
+
+  const forecast = useMemo(() => computeGasForecast(entries, today()), [entries]);
+  const reminderEval = useMemo(
+    () => evaluateReminder(forecast, reminder),
+    [forecast, reminder],
+  );
+
+  const requestNotifications = async () => {
+    if (typeof window === "undefined" || !("Notification" in window)) {
+      return notify(
+        "Este navegador não suporta notificações. Use o lembrete de calendário (.ics).",
+        true,
+      );
+    }
+    const result = await Notification.requestPermission();
+    setNotifPerm(result);
+    if (result === "granted") {
+      notify("Notificações ativadas para quando o aplicativo for aberto.");
+    } else {
+      notify("Permissão de notificação não concedida.", true);
+    }
+  };
+
   const clear = async () => {
     const confirmed = await iosConfirm(
-      "Apagar permanentemente todas as compras e vendedores deste aparelho?",
+      "Apagar permanentemente todas as compras e fornecedores deste aparelho?",
       true,
     );
     if (!confirmed) return;
@@ -1059,8 +2008,8 @@ function Settings({
 
   return (
     <section>
-      <h1>Configurações</h1>
-      <p>Preferências, backup e seus dados</p>
+      <h1>Ajustes</h1>
+      <p>Preferências, lembretes, relatórios e seus dados</p>
 
       <h2 className="section-title">APARÊNCIA</h2>
       <article className="panel setting">
@@ -1076,6 +2025,119 @@ function Settings({
         />
       </article>
 
+      <h2 className="section-title">LEMBRETES DE REPOSIÇÃO</h2>
+      <article className="panel reminder-settings">
+        <div className="setting">
+          <div>
+            <strong>Lembrete antes da previsão</strong>
+            <span>Avisa no aplicativo quando o botijão estiver perto do fim</span>
+          </div>
+          <Chips
+            values={["on", "off"]}
+            value={reminder.enabled ? "on" : "off"}
+            onChange={(v) =>
+              setReminder({ ...reminder, enabled: v === "on" })
+            }
+            labels={{ on: "Ativado", off: "Desativado" }}
+          />
+        </div>
+
+        {reminder.enabled && (
+          <>
+            <div className="setting">
+              <div>
+                <strong>Antecedência do aviso</strong>
+                <span>Quantos dias antes da data estimada</span>
+              </div>
+              <Chips
+                values={REMINDER_LEAD_OPTIONS}
+                value={String(reminder.leadDays)}
+                onChange={(v) =>
+                  setReminder({ ...reminder, leadDays: Number(v) })
+                }
+                labels={{
+                  "3": "3d",
+                  "5": "5d",
+                  "7": "7d",
+                  "10": "10d",
+                  "15": "15d",
+                }}
+              />
+            </div>
+
+            <div className="reminder-platform-box">
+              <div className="reminder-platform-actions">
+                <button
+                  type="button"
+                  className="secondary-btn"
+                  disabled={!forecast.nextEstimatedDate}
+                  onClick={onDownloadCalendar}
+                >
+                  Adicionar ao calendário (.ics)
+                </button>
+                {notifPerm !== "unsupported" && notifPerm !== "granted" && (
+                  <button
+                    type="button"
+                    className="secondary-btn"
+                    onClick={requestNotifications}
+                  >
+                    Autorizar notificação do navegador
+                  </button>
+                )}
+              </div>
+              <small>
+                {forecast.nextEstimatedDate && reminderEval.reminderDate
+                  ? `Próximo lembrete previsto: ${brDate(reminderEval.reminderDate)} (previsão de reposição em ${brDate(forecast.nextEstimatedDate)}). `
+                  : "Registre compras em pelo menos 2 datas para calcular o próximo lembrete. "}
+                Em PWAs locais sem servidor, alertas com o app fechado funcionam adicionando o evento (.ics) ao calendário do celular.
+                {notifPerm === "granted" &&
+                  " Notificações do navegador estão autorizadas ao abrir o app."}
+              </small>
+            </div>
+          </>
+        )}
+      </article>
+
+      <h2 className="section-title">RELATÓRIOS</h2>
+      <article className="panel report-settings">
+        <div className="setting">
+          <div>
+            <strong>Período do relatório</strong>
+            <span>Filtra compras, fornecedores e estatísticas</span>
+          </div>
+          <Chips
+            values={["6 meses", "1 ano", "Tudo"]}
+            value={reportPeriod}
+            onChange={(v) => setReportPeriod(v as PeriodOption)}
+          />
+        </div>
+        <div className="settings-grid">
+          <button
+            type="button"
+            className="setting-button"
+            onClick={() => onExportPdf(reportPeriod)}
+          >
+            <b>📄</b>
+            <div>
+              <strong>Exportar relatório PDF</strong>
+              <span>Pronto para imprimir ou salvar em PDF</span>
+            </div>
+          </button>
+
+          <button
+            type="button"
+            className="setting-button"
+            onClick={() => onExportCsv(reportPeriod)}
+          >
+            <b>⊞</b>
+            <div>
+              <strong>Exportar planilha Excel (.csv)</strong>
+              <span>Compatível com Excel e planilhas</span>
+            </div>
+          </button>
+        </div>
+      </article>
+
       <h2 className="section-title">BACKUP COMPLETO</h2>
       <div className="settings-grid">
         <button type="button" className="setting-button" onClick={exportJson}>
@@ -1083,7 +2145,7 @@ function Settings({
           <div>
             <strong>Salvar backup JSON</strong>
             <span>
-              {entries.length} compras e {vendors.length} vendedores
+              {entries.length} compras e {vendors.length} fornecedores
             </span>
           </div>
         </button>

@@ -1,6 +1,6 @@
 # Controle do Gás — PWA
 
-Versão web instalável e offline do aplicativo Controle do Gás.
+Aplicativo web instalável (PWA) e offline para acompanhar compras, consumo e duração estimada do botijão de gás.
 
 ## Desenvolvimento
 
@@ -11,10 +11,17 @@ npm install
 npm run dev
 ```
 
-Para validar uma versão de produção:
+Para validar o build estático e os testes:
 
 ```bash
-npm run build
+npm run lint
+npm test
 ```
 
-Os dados ficam somente no dispositivo, em IndexedDB. Use o backup JSON em Configurações para proteger e transferir compras, vendedores e preferências. Os CSVs mantêm compatibilidade com o aplicativo Android.
+## Publicação
+
+O push na branch `main` gera a exportação estática (`./out`) e publica automaticamente no GitHub Pages via GitHub Actions.
+
+## Dados e backup
+
+Os dados ficam armazenados localmente no dispositivo (IndexedDB). Use o backup JSON em **Configurações** para salvar ou restaurar suas compras, vendedores e preferências.

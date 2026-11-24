@@ -207,18 +207,59 @@ const iosConfirm = (message: string, destructive = false) =>
     confirmButton.focus();
   });
 
-function Icon({ name }: { name: string }) {
-  const icons: Record<string, string> = {
-    dashboard: "⌂",
-    add: "＋",
-    history: "≡",
-    vendors: "▣",
-    settings: "⚙",
+function Icon({ name }: { name: Tab }) {
+  const common = {
+    viewBox: "0 0 24 24",
+    width: 21,
+    height: 21,
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 1.85,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+    className: "nav-icon",
+    "aria-hidden": true,
   };
+
+  if (name === "dashboard") {
+    return (
+      <svg {...common}>
+        <path d="M3 10.5 12 3l9 7.5" />
+        <path d="M5 9.5V20a1 1 0 0 0 1 1h4.5v-6h3v6H18a1 1 0 0 0 1-1V9.5" />
+      </svg>
+    );
+  }
+  if (name === "add") {
+    return (
+      <svg {...common}>
+        <path d="M12 5v14M5 12h14" />
+      </svg>
+    );
+  }
+  if (name === "history") {
+    return (
+      <svg {...common}>
+        <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
+        <path d="M3 3v5h5" />
+        <path d="M12 7v5l3 2" />
+      </svg>
+    );
+  }
+  if (name === "vendors") {
+    return (
+      <svg {...common}>
+        <path d="M4 9.5 5.4 4h13.2L20 9.5" />
+        <path d="M4 9.5a2.5 2.5 0 0 0 5 0 2.5 2.5 0 0 0 6 0 2.5 2.5 0 0 0 5 0" />
+        <path d="M5.5 11.5V20h13v-8.5" />
+        <path d="M9.5 20v-5h5v5" />
+      </svg>
+    );
+  }
   return (
-    <span className="icon" aria-hidden>
-      {icons[name] || name}
-    </span>
+    <svg {...common}>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 .99-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51.99H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z" />
+    </svg>
   );
 }
 
@@ -536,19 +577,12 @@ export default function Home() {
               key={t}
               type="button"
               aria-label={navLabels[t].full}
-              className={[
-                tab === t ? "selected" : "",
-                t === "add" ? "nav-primary" : "",
-              ]
-                .filter(Boolean)
-                .join(" ")}
+              aria-current={tab === t ? "page" : undefined}
+              title={navLabels[t].full}
+              className={tab === t ? "selected" : ""}
               onClick={() => setTab(t)}
             >
               <Icon name={t} />
-              <span className="nav-label-full">{navLabels[t].full}</span>
-              <span className="nav-label-short" aria-hidden>
-                {navLabels[t].short}
-              </span>
             </button>
           ),
         )}
@@ -819,6 +853,19 @@ function Dashboard({
           }
         />
         <Metric
+          label="Gasto mensal estimado"
+          value={
+            stats.estimatedMonthlySpend !== null
+              ? brl(stats.estimatedMonthlySpend)
+              : "—"
+          }
+          sub={
+            stats.estimatedMonthlySpend !== null
+              ? "projeção para 30 dias"
+              : "mín. 2 datas no período"
+          }
+        />
+        <Metric
           label="Intervalo médio"
           value={
             metrics.interval.averageDays !== null
@@ -895,15 +942,15 @@ function Dashboard({
 
         <div className="stats-grid">
           <div className="stat-box">
-            <span>Gasto mensal estimado</span>
+            <span>Custo diário estimado</span>
             <strong>
               {stats.estimatedMonthlySpend !== null
-                ? brl(stats.estimatedMonthlySpend)
+                ? brl(stats.estimatedMonthlySpend / 30)
                 : "—"}
             </strong>
             <small>
               {stats.estimatedMonthlySpend !== null
-                ? "projeção para 30 dias"
+                ? "preço médio ÷ intervalo"
                 : "mín. 2 datas no período"}
             </small>
           </div>

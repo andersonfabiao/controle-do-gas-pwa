@@ -1,5 +1,5 @@
 const BASE = "/controle-do-gas-pwa";
-const CACHE = "gastracker-v8";
+const CACHE = "gastracker-v9";
 const ASSETS = [
   `${BASE}/`,
   `${BASE}/manifest.json`,

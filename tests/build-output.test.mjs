@@ -56,7 +56,7 @@ test("implements Phase 1 dashboard labels, chart details, and bottom nav clearan
   assert.match(page, /Intervalo médio/);
   assert.doesNotMatch(page, /label="Frequência"/);
   assert.match(page, /chart-avg-line/);
-  assert.match(css, /padding-bottom:\s*calc\(128px \+ env\(safe-area-inset-bottom\)\)/);
+  assert.match(css, /padding-bottom:\s*calc\(108px \+ env\(safe-area-inset-bottom\)\)/);
 });
 
 test("implements Phase 3 navigation labels, supplier comparison, and savings card", async () => {
@@ -66,7 +66,7 @@ test("implements Phase 3 navigation labels, supplier comparison, and savings car
   assert.match(page, /full:\s*"Registrar compra"/);
   assert.match(page, /full:\s*"Fornecedores"/);
   assert.match(page, /full:\s*"Ajustes"/);
-  assert.match(page, /nav-primary/);
+  assert.doesNotMatch(page, /nav-primary/);
   assert.match(page, /ECONOMIA NA ÚLTIMA COMPRA/);
   assert.match(page, /MENOR PREÇO NOS SEUS REGISTROS/);
   assert.match(page, /Observações/);
